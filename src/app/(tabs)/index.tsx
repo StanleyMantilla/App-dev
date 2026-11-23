@@ -200,8 +200,9 @@ export default function HomeScreen() {
           />
 
           <Text style={styles.sectionTitle}>
-            Student Directory
+            MyFirstAppp - Live Testing!
           </Text>
+          {/* <Text>MyFirstApp - Live Testing!</Text> */}
 
           <TextInput
             style={styles.input}

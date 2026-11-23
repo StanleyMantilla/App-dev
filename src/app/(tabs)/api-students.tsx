@@ -13,7 +13,9 @@ import {
   View,
 } from 'react-native';
 
-// 1. Define the structure of API data
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Student data structure
 type ApiStudent = {
   id: number;
   name: string;
@@ -23,27 +25,90 @@ type ApiStudent = {
   website: string;
 };
 
-export default function ApiStudentsScreen() {
-  // 2. Store API student records
-  const [students, setStudents] = useState<ApiStudent[]>([]);
+// AsyncStorage key
+const STORAGE_KEY = '@api_students_local_records';
 
-  // 3. Store search keyword
+export default function ApiStudentsScreen() {
+  // API students
+  const [apiStudents, setApiStudents] = useState<ApiStudent[]>([]);
+
+  // Locally saved students
+  const [localStudents, setLocalStudents] = useState<ApiStudent[]>([]);
+
+  // Search
   const [searchText, setSearchText] = useState('');
 
-  // 4. Track loading and refreshing status
+  // Loading states
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [isAdding, setIsAdding] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
 
-  // 5. Track errors
-  const [error, setError] = useState('');
-
-  // 6. CREATE: Student form states
+  // Form states
   const [newName, setNewName] = useState('');
   const [newUsername, setNewUsername] = useState('');
   const [newEmail, setNewEmail] = useState('');
-  const [isAdding, setIsAdding] = useState(false);
 
-  // 7. Reusable function for retrieving student records
+  // Edit state
+  const [editingStudent, setEditingStudent] =
+    useState<ApiStudent | null>(null);
+
+  // Error state
+  const [error, setError] = useState('');
+
+  // Email validation
+  const validateForm = () => {
+    if (
+      newName.trim() === '' ||
+      newUsername.trim() === '' ||
+      newEmail.trim() === ''
+    ) {
+      Alert.alert('Required', 'Please complete all fields.');
+      return false;
+    }
+
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailPattern.test(newEmail.trim())) {
+      Alert.alert('Invalid Email', 'Please enter a valid email address.');
+      return false;
+    }
+
+    return true;
+  };
+
+  // Clear form
+  const clearForm = () => {
+    setNewName('');
+    setNewUsername('');
+    setNewEmail('');
+    setEditingStudent(null);
+  };
+
+  // 1. LOAD STUDENTS FROM ASYNCSTORAGE
+  const loadLocalStudents = async (): Promise<ApiStudent[]> => {
+    try {
+      const savedData = await AsyncStorage.getItem(STORAGE_KEY);
+
+      if (savedData !== null) {
+        const parsedData: ApiStudent[] = JSON.parse(savedData);
+
+        setLocalStudents(parsedData);
+
+        console.log('Loaded local students:', parsedData);
+
+        return parsedData;
+      }
+
+      setLocalStudents([]);
+      return [];
+    } catch (err) {
+      console.error('AsyncStorage Load Error:', err);
+      throw new Error('Unable to load saved students.');
+    }
+  };
+
+  // 2. FETCH API STUDENTS AND RESTORE LOCAL STUDENTS
   const fetchStudents = async (isRefreshing = false) => {
     try {
       if (isRefreshing) {
@@ -54,107 +119,275 @@ export default function ApiStudentsScreen() {
 
       setError('');
 
+      // Restore locally saved students
+      const savedStudents = await loadLocalStudents();
+
+      // Retrieve API records
       const response = await fetch(
         'https://jsonplaceholder.typicode.com/users'
       );
 
       if (!response.ok) {
-        throw new Error('Failed to retrieve student data.');
+        throw new Error('Failed to retrieve API students.');
       }
 
       const data: ApiStudent[] = await response.json();
 
-      setStudents(data);
+      setApiStudents(data);
+      setLocalStudents(savedStudents);
     } catch (err) {
-      setError('Unable to connect to the server. Please try again.');
-      console.error('API Error:', err);
+      console.error('Fetch Students Error:', err);
+
+      setError(
+        'Unable to retrieve API records. Please check your internet connection.'
+      );
     } finally {
       setIsLoading(false);
       setRefreshing(false);
     }
   };
 
-  // 8. Automatically retrieve records when the screen opens
+  // 3. LOAD DATA WHEN SCREEN OPENS
   useEffect(() => {
     fetchStudents();
   }, []);
 
-  // 9. CREATE: Add a new student
+  // 4. ADD NEW STUDENT
   const addStudent = async () => {
-    // Validate required fields
-    if (
-      newName.trim() === '' ||
-      newUsername.trim() === '' ||
-      newEmail.trim() === ''
-    ) {
-      Alert.alert('Required', 'Please complete all fields.');
-      return;
-    }
-
-    // Validate email format
-    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-    if (!emailPattern.test(newEmail.trim())) {
-      Alert.alert('Invalid Email', 'Please enter a valid email address.');
-      return;
-    }
+    if (!validateForm()) return;
 
     try {
       setIsAdding(true);
 
-      const response = await fetch(
-        'https://jsonplaceholder.typicode.com/users',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            name: newName.trim(),
-            username: newUsername.trim(),
-            email: newEmail.trim(),
-          }),
-        }
-      );
+      // Send POST request to JSONPlaceholder
+      let apiRequestSuccessful = false;
 
-      if (!response.ok) {
-        throw new Error('Failed to add student.');
+      try {
+        const response = await fetch(
+          'https://jsonplaceholder.typicode.com/users',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: newName.trim(),
+              username: newUsername.trim(),
+              email: newEmail.trim(),
+            }),
+          }
+        );
+
+        apiRequestSuccessful = response.ok;
+      } catch (apiError) {
+        console.log('POST API Error:', apiError);
       }
 
-      const createdStudent: ApiStudent = await response.json();
+      // Read existing local students
+      const existingStudents = await AsyncStorage.getItem(STORAGE_KEY);
 
-      // Add the new student to the beginning of the list
-      setStudents((previousStudents) => [
+      const currentLocalStudents: ApiStudent[] = existingStudents
+        ? JSON.parse(existingStudents)
+        : [];
+
+      // Create local student
+      const createdStudent: ApiStudent = {
+        id: Date.now(),
+        name: newName.trim(),
+        username: newUsername.trim(),
+        email: newEmail.trim(),
+        phone: '',
+        website: '',
+      };
+
+      // Add new student
+      const updatedStudents = [
         createdStudent,
-        ...previousStudents,
-      ]);
+        ...currentLocalStudents,
+      ];
 
-      // Clear the form
-      setNewName('');
-      setNewUsername('');
-      setNewEmail('');
+      // Save to AsyncStorage
+      await AsyncStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(updatedStudents)
+      );
 
-      // Clear the search to make the new record visible
+      // Verify saved records
+      const verifySaved = await AsyncStorage.getItem(STORAGE_KEY);
+
+      if (verifySaved === null) {
+        throw new Error('Student data was not saved.');
+      }
+
+      const verifiedStudents: ApiStudent[] = JSON.parse(verifySaved);
+
+      // Update screen
+      setLocalStudents(verifiedStudents);
+
+      // Clear form
+      clearForm();
       setSearchText('');
 
-      Alert.alert(
-        'Success',
-        'Student added successfully!'
-      );
+      console.log('Student successfully saved:', createdStudent);
+
+      if (apiRequestSuccessful) {
+        Alert.alert(
+          'Success!',
+          'Student added successfully and saved on your device.'
+        );
+      } else {
+        Alert.alert(
+          'Saved Locally!',
+          'The API was unavailable, but your student record was saved on your device.'
+        );
+      }
     } catch (err) {
       console.error('Add Student Error:', err);
 
       Alert.alert(
         'Error',
-        'Unable to add student. Please try again.'
+        'Unable to save student. Please try again.'
       );
     } finally {
       setIsAdding(false);
     }
   };
 
-  // 10. Filter students based on search keyword
-  const filteredStudents = students.filter((student) => {
+  // 5. UPDATE EXISTING STUDENT
+  const editStudent = async () => {
+    if (!editingStudent) return;
+
+    if (!validateForm()) return;
+
+    try {
+      setIsUpdating(true);
+
+      // Read latest saved records
+      const savedData = await AsyncStorage.getItem(STORAGE_KEY);
+
+      const currentStudents: ApiStudent[] = savedData
+        ? JSON.parse(savedData)
+        : [];
+
+      // Update selected student
+      const updatedStudents = currentStudents.map((student) =>
+        student.id === editingStudent.id
+          ? {
+              ...student,
+              name: newName.trim(),
+              username: newUsername.trim(),
+              email: newEmail.trim(),
+            }
+          : student
+      );
+
+      // Save updated records
+      await AsyncStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(updatedStudents)
+      );
+
+      // Verify saved records
+      const verifySaved = await AsyncStorage.getItem(STORAGE_KEY);
+
+      if (verifySaved === null) {
+        throw new Error('Updated student was not saved.');
+      }
+
+      const verifiedStudents: ApiStudent[] = JSON.parse(verifySaved);
+
+      // Update screen
+      setLocalStudents(verifiedStudents);
+
+      console.log('Student successfully updated:', editingStudent.id);
+
+      // Clear form
+      clearForm();
+
+      Alert.alert(
+        'Success!',
+        'Student information updated successfully.'
+      );
+    } catch (err) {
+      console.error('Update Student Error:', err);
+
+      Alert.alert(
+        'Error',
+        'Unable to update student. Please try again.'
+      );
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // 6. CANCEL EDITING
+  const cancelEdit = () => {
+    clearForm();
+    Alert.alert('Cancelled', 'Student editing has been cancelled.');
+  };
+
+  // 7. DELETE STUDENT
+  const deleteStudent = (student: ApiStudent) => {
+    Alert.alert(
+      'Delete Student',
+      `Are you sure you want to delete ${student.name}?`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const savedStudents = await AsyncStorage.getItem(STORAGE_KEY);
+
+              const students: ApiStudent[] = savedStudents
+                ? JSON.parse(savedStudents)
+                : [];
+
+              const updatedStudents = students.filter(
+                (item) => item.id !== student.id
+              );
+
+              // Save updated records
+              await AsyncStorage.setItem(
+                STORAGE_KEY,
+                JSON.stringify(updatedStudents)
+              );
+
+              // Update screen
+              setLocalStudents(updatedStudents);
+
+              // Cancel editing if this student is being edited
+              if (editingStudent?.id === student.id) {
+                clearForm();
+              }
+
+              Alert.alert(
+                'Success!',
+                'Student deleted successfully!'
+              );
+            } catch (err) {
+              console.error('Delete Student Error:', err);
+
+              Alert.alert(
+                'Error',
+                'Unable to delete student. Please try again.'
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // 8. COMBINE API AND LOCAL STUDENTS
+  const allStudents = [...localStudents, ...apiStudents];
+
+  // 9. SEARCH STUDENTS
+  const filteredStudents = allStudents.filter((student) => {
     const keyword = searchText.toLowerCase().trim();
 
     return (
@@ -164,7 +397,7 @@ export default function ApiStudentsScreen() {
     );
   });
 
-  // 11. Display loading indicator
+  // 10. LOADING SCREEN
   if (isLoading) {
     return (
       <View style={styles.centerContainer}>
@@ -177,27 +410,7 @@ export default function ApiStudentsScreen() {
     );
   }
 
-  // 12. Display error message
-  if (error !== '') {
-    return (
-      <View style={styles.centerContainer}>
-        <Text style={styles.errorText}>
-          {error}
-        </Text>
-
-        <TouchableOpacity
-          style={styles.retryButton}
-          onPress={() => fetchStudents()}
-        >
-          <Text style={styles.addButtonText}>
-            Try Again
-          </Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  // 13. Display student directory
+  // 11. MAIN SCREEN
   return (
     <View style={styles.container}>
       <Text style={styles.title}>
@@ -208,10 +421,20 @@ export default function ApiStudentsScreen() {
         Search and manage student records.
       </Text>
 
-      {/* CREATE: Add Student Form */}
+      {error !== '' && (
+        <View style={styles.errorBanner}>
+          <Text style={styles.errorText}>{error}</Text>
+
+          <TouchableOpacity onPress={() => fetchStudents()}>
+            <Text style={styles.retryText}>Try Again</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* ADD / EDIT STUDENT FORM */}
       <View style={styles.formContainer}>
         <Text style={styles.formTitle}>
-          Add New Student
+          {editingStudent ? 'Edit Student' : 'Add New Student'}
         </Text>
 
         <TextInput
@@ -244,22 +467,34 @@ export default function ApiStudentsScreen() {
         <TouchableOpacity
           style={[
             styles.addButton,
-            isAdding && styles.disabledButton,
+            (isAdding || isUpdating) && styles.disabledButton,
           ]}
-          onPress={addStudent}
-          disabled={isAdding}
+          onPress={editingStudent ? editStudent : addStudent}
+          disabled={isAdding || isUpdating}
         >
-          {isAdding ? (
+          {(isAdding || isUpdating) ? (
             <ActivityIndicator color="#FFFFFF" />
           ) : (
             <Text style={styles.addButtonText}>
-              + Add Student
+              {editingStudent ? 'Update Student' : '+ Add Student'}
             </Text>
           )}
         </TouchableOpacity>
+
+        {editingStudent && (
+          <TouchableOpacity
+            style={styles.cancelButton}
+            onPress={cancelEdit}
+            disabled={isUpdating}
+          >
+            <Text style={styles.cancelButtonText}>
+              Cancel Editing
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
-      {/* SEARCH INPUT */}
+      {/* SEARCH */}
       <TextInput
         style={styles.searchInput}
         placeholder="Search name, username, or email..."
@@ -268,13 +503,15 @@ export default function ApiStudentsScreen() {
         onChangeText={setSearchText}
       />
 
+      {/* STUDENT COUNT */}
       <Text style={styles.resultCount}>
-        Showing {filteredStudents.length} of {students.length} students
+        Showing {filteredStudents.length} of {allStudents.length} students
       </Text>
 
       {/* STUDENT LIST */}
       <FlatList
         data={filteredStudents}
+        keyExtractor={(item) => item.id.toString()}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -283,30 +520,73 @@ export default function ApiStudentsScreen() {
             tintColor="#6C55D9"
           />
         }
-        keyExtractor={(item) => item.id.toString()}
-        renderItem={({ item }) => (
-          <View style={styles.studentCard}>
-            <Text style={styles.studentName}>
-              {item.name}
-            </Text>
+        renderItem={({ item }) => {
+          const isLocallySaved = localStudents.some(
+            (student) => student.id === item.id
+          );
 
-            <Text style={styles.studentDetail}>
-              Username: {item.username}
-            </Text>
+          return (
+            <View style={styles.studentCard}>
+              <View style={styles.studentHeader}>
+                <Text style={styles.studentName}>
+                  {item.name}
+                </Text>
 
-            <Text style={styles.studentDetail}>
-              Email: {item.email}
-            </Text>
+                {isLocallySaved && (
+                  <View style={styles.localBadge}>
+                    <Text style={styles.localBadgeText}>
+                      SAVED
+                    </Text>
+                  </View>
+                )}
+              </View>
 
-            <Text style={styles.studentDetail}>
-              Phone: {item.phone}
-            </Text>
+              <Text style={styles.studentDetail}>
+                Username: {item.username}
+              </Text>
 
-            <Text style={styles.studentDetail}>
-              Website: {item.website}
-            </Text>
-          </View>
-        )}
+              <Text style={styles.studentDetail}>
+                Email: {item.email}
+              </Text>
+
+              <Text style={styles.studentDetail}>
+                Phone: {item.phone || 'Not provided'}
+              </Text>
+
+              <Text style={styles.studentDetail}>
+                Website: {item.website || 'Not provided'}
+              </Text>
+
+              {/* EDIT AND DELETE BUTTONS */}
+              {isLocallySaved && (
+                <>
+                  <TouchableOpacity
+                    style={styles.editButton}
+                    onPress={() => {
+                      setEditingStudent(item);
+                      setNewName(item.name);
+                      setNewUsername(item.username);
+                      setNewEmail(item.email);
+                    }}
+                  >
+                    <Text style={styles.editButtonText}>
+                      Edit Student
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.deleteButton}
+                    onPress={() => deleteStudent(item)}
+                  >
+                    <Text style={styles.deleteButtonText}>
+                      Delete Student
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+          );
+        }}
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyTitle}>
@@ -323,7 +603,7 @@ export default function ApiStudentsScreen() {
   );
 }
 
-// 14. Styles
+// 12. STYLES
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -384,13 +664,41 @@ const styles = StyleSheet.create({
   disabledButton: {
     opacity: 0.6,
   },
-  retryButton: {
-    backgroundColor: '#6C55D9',
-    padding: 14,
+  cancelButton: {
+    backgroundColor: '#FCE8E8',
+    padding: 13,
     borderRadius: 10,
-    marginTop: 20,
-    minWidth: 120,
     alignItems: 'center',
+    marginTop: 10,
+  },
+  cancelButtonText: {
+    color: '#C62828',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  editButton: {
+    backgroundColor: '#E6DFFF',
+    padding: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 15,
+  },
+  editButtonText: {
+    color: '#5B45C6',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  deleteButton: {
+    backgroundColor: '#FCE8E8',
+    padding: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  deleteButtonText: {
+    color: '#C62828',
+    fontSize: 14,
+    fontWeight: 'bold',
   },
   searchInput: {
     backgroundColor: '#FFFFFF',
@@ -413,10 +721,20 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#6C55D9',
   },
+  errorBanner: {
+    backgroundColor: '#FCE8E8',
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 15,
+  },
   errorText: {
-    color: '#D32F2F',
-    fontSize: 16,
-    textAlign: 'center',
+    color: '#C62828',
+    fontSize: 13,
+  },
+  retryText: {
+    color: '#5B45C6',
+    fontWeight: 'bold',
+    marginTop: 8,
   },
   studentCard: {
     backgroundColor: '#FFFFFF',
@@ -425,11 +743,29 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     elevation: 3,
   },
+  studentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginBottom: 8,
+  },
   studentName: {
     fontSize: 19,
     fontWeight: 'bold',
     color: '#5B45C6',
-    marginBottom: 8,
+    flexShrink: 1,
+  },
+  localBadge: {
+    backgroundColor: '#E6DFFF',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  localBadgeText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#5B45C6',
   },
   studentDetail: {
     fontSize: 14,
